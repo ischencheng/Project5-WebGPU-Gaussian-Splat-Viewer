@@ -1,12 +1,16 @@
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     //TODO: information passed from vertex shader to fragment shader
+    @location(0) color: vec3<f32>,
 };
 
 struct Splat {
     //TODO: information defined in preprocess compute shader
-    pos: vec2<f32>,     // ndc center
-    size: u32,          // quad half size in ndc, 2 x f16
+    pos: vec2<f32>,             // ndc center
+    size: u32,                  // quad half size in ndc, 2 x f16
+    opacity: f32,
+    conic: array<u32,2>,        // 2d conic (a, b, c), f16
+    color: array<u32,2>,        // rgb, f16
 };
 
 @group(0) @binding(0)
@@ -29,10 +33,11 @@ fn vs_main(
     let splat = splats[sort_indices[instance_index]];
     let size = unpack2x16float(splat.size);
     out.position = vec4<f32>(splat.pos + corners[vertex_index] * size, 0.0, 1.0);
+    out.color = vec3<f32>(unpack2x16float(splat.color[0]), unpack2x16float(splat.color[1]).x);
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(1.);
+    return vec4<f32>(in.color, 1.);
 }

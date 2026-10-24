@@ -22,7 +22,7 @@ const createBuffer = (
 };
 
 // byte size of Splat in the shaders
-const c_size_splat = 4 * 4;
+const c_size_splat = 8 * 4;
 
 export default function get_renderer(
   pc: PointCloud,
@@ -78,6 +78,7 @@ export default function get_renderer(
     entries: [
       { binding: 0, resource: { buffer: pc.gaussian_3d_buffer } },
       { binding: 1, resource: { buffer: splat_buffer } },
+      { binding: 2, resource: { buffer: pc.sh_buffer } },
     ],
   });
 
