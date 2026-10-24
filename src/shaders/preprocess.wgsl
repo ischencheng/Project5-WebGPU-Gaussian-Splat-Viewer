@@ -19,6 +19,7 @@ const SH_C3 = array<f32,7>(
 
 override workgroupSize: u32;
 override sortKeyPerThread: u32;
+override sortWorkgroupSize: u32;
 
 struct DispatchIndirect {
     dispatch_x: atomic<u32>,
@@ -47,6 +48,7 @@ struct CameraUniforms {
 struct RenderSettings {
     gaussian_scaling: f32,
     sh_deg: f32,
+    culling: f32,       // 1 = frustum culling on
 }
 
 struct Gaussian {
@@ -150,7 +152,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let ndc = clip_pos.xyz / clip_pos.w;
 
     // 1.2x bigger box so splats at the edge are kept
-    if (abs(ndc.x) > 1.2 || abs(ndc.y) > 1.2 || ndc.z < 0.0 || ndc.z > 1.0) {
+    let outside = abs(ndc.x) > 1.2 || abs(ndc.y) > 1.2 || ndc.z > 1.0;
+    // splats behind the near plane can't be projected, so they are always skipped
+    if (clip_pos.w <= 0.0 || ndc.z < 0.0 || (render_settings.culling > 0.5 && outside)) {
         return;
     }
 
@@ -219,7 +223,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     // the sort is ascending, so far splats get small keys
     sort_depths[key] = 0xffffffffu - bitcast<u32>(view_pos.z);
 
-    let keys_per_dispatch = workgroupSize * sortKeyPerThread;
+    let keys_per_dispatch = sortWorkgroupSize * sortKeyPerThread;
     // increment DispatchIndirect.dispatchx each time you reach limit for one dispatch of keys
     if (key % keys_per_dispatch == 0u) {
         atomicAdd(&sort_dispatch.dispatch_x, 1u);

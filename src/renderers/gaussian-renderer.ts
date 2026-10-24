@@ -5,7 +5,7 @@ import { get_sorter,c_histogram_block_rows,C } from '../sort/sort';
 import { Renderer } from './renderer';
 
 export interface GaussianRenderer extends Renderer {
-  update_settings: (params: { gaussian_multiplier: number }) => void,
+  update_settings: (params: { gaussian_multiplier: number, culling: boolean }) => void,
 }
 
 // Utility to create GPU buffers
@@ -23,6 +23,9 @@ const createBuffer = (
 
 // byte size of Splat in the shaders
 const c_size_splat = 8 * 4;
+
+// preprocess workgroup size, can be changed with ?workgroup=N in the url
+const workgroup_size = Number(new URLSearchParams(location.search).get('workgroup') ?? C.histogram_wg_size);
 
 export default function get_renderer(
   pc: PointCloud,
@@ -43,9 +46,9 @@ export default function get_renderer(
   const indirect_buffer = createBuffer(device, 'gaussian draw indirect', 4 * 4,
     GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST, new Uint32Array([6, 0, 0, 0]));
   const splat_buffer = createBuffer(device, 'gaussian splats', pc.num_points * c_size_splat, GPUBufferUsage.STORAGE);
-  // gaussian_scaling, sh_deg
-  const settings_buffer = createBuffer(device, 'gaussian render settings', 2 * 4,
-    GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, new Float32Array([1.0, pc.sh_deg]));
+  // gaussian_scaling, sh_deg, culling
+  const settings_buffer = createBuffer(device, 'gaussian render settings', 3 * 4,
+    GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, new Float32Array([1.0, pc.sh_deg, 1.0]));
 
   // ===============================================
   //    Create Compute Pipeline and Bind Groups
@@ -57,8 +60,9 @@ export default function get_renderer(
       module: device.createShaderModule({ code: preprocessWGSL }),
       entryPoint: 'preprocess',
       constants: {
-        workgroupSize: C.histogram_wg_size,
+        workgroupSize: workgroup_size,
         sortKeyPerThread: c_histogram_block_rows,
+        sortWorkgroupSize: C.histogram_wg_size,
       },
     },
   });
@@ -141,7 +145,7 @@ export default function get_renderer(
     pass.setBindGroup(0, camera_bind_group);
     pass.setBindGroup(1, gaussian_bind_group);
     pass.setBindGroup(2, sort_bind_group);
-    pass.dispatchWorkgroups(Math.ceil(pc.num_points / C.histogram_wg_size));
+    pass.dispatchWorkgroups(Math.ceil(pc.num_points / workgroup_size));
     pass.end();
   };
 
@@ -179,7 +183,7 @@ export default function get_renderer(
     },
     camera_buffer,
     update_settings: (params) => {
-      device.queue.writeBuffer(settings_buffer, 0, new Float32Array([params.gaussian_multiplier]));
+      device.queue.writeBuffer(settings_buffer, 0, new Float32Array([params.gaussian_multiplier, pc.sh_deg, params.culling ? 1 : 0]));
     },
   };
 }
