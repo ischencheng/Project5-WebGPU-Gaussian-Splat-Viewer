@@ -108,7 +108,14 @@ export default function get_renderer(
     fragment: {
       module: render_shader,
       entryPoint: 'fs_main',
-      targets: [{ format: presentation_format }],
+      targets: [{
+        format: presentation_format,
+        // back to front "over" blending with premultiplied color
+        blend: {
+          color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        },
+      }],
     },
     primitive: {
       topology: 'triangle-list',
@@ -121,6 +128,7 @@ export default function get_renderer(
     entries: [
       { binding: 0, resource: { buffer: splat_buffer } },
       { binding: 1, resource: { buffer: sorter.ping_pong[0].sort_indices_buffer } },
+      { binding: 2, resource: { buffer: camera_buffer } },
     ],
   });
 
