@@ -3,9 +3,10 @@ import preprocessWGSL from '../shaders/preprocess.wgsl';
 import renderWGSL from '../shaders/gaussian.wgsl';
 import { get_sorter,c_histogram_block_rows,C } from '../sort/sort';
 import { Renderer } from './renderer';
+import { create_tile_renderer } from './tile-renderer';
 
 export interface GaussianRenderer extends Renderer {
-  update_settings: (params: { gaussian_multiplier: number, culling: boolean, half_precision: boolean }) => void,
+  update_settings: (params: { gaussian_multiplier: number, culling: boolean, half_precision: boolean, tile_sort: boolean }) => void,
 }
 
 // Utility to create GPU buffers
@@ -108,6 +109,8 @@ export default function get_renderer(
   const preprocess_f32 = create_preprocess(preprocessWGSL);
   const preprocess_f16 = device.features.has('shader-f16') ? create_preprocess(preprocessF16WGSL) : undefined;
   let half_precision = false;
+  let tile_sort = false;
+  let tiles: ReturnType<typeof create_tile_renderer> | undefined;
 
 
   // ===============================================
@@ -182,11 +185,17 @@ export default function get_renderer(
   //    Return Render Object
   // ===============================================
   return {
-    frame: (encoder: GPUCommandEncoder, texture_view: GPUTextureView) => {
+    frame: (encoder: GPUCommandEncoder, texture_view: GPUTextureView, texture: GPUTexture) => {
       // reset the visible count and the sort dispatch size
       device.queue.writeBuffer(sorter.sort_info_buffer, 0, nulling_data);
       device.queue.writeBuffer(sorter.sort_dispatch_indirect_buffer, 0, nulling_data);
       preprocess(encoder);
+      if (tile_sort) {
+        // made when it is first used, its sort buffers are big
+        tiles ??= create_tile_renderer(device, pc.num_points, presentation_format, camera_buffer, splat_buffer, sorter);
+        tiles.frame(encoder, texture, texture_view);
+        return;
+      }
       sorter.sort(encoder);
       // instance count = number of splats left after culling
       encoder.copyBufferToBuffer(sorter.sort_info_buffer, 0, indirect_buffer, 4, 4);
@@ -196,6 +205,7 @@ export default function get_renderer(
     update_settings: (params) => {
       device.queue.writeBuffer(settings_buffer, 0, new Float32Array([params.gaussian_multiplier, pc.sh_deg, params.culling ? 1 : 0]));
       half_precision = params.half_precision;
+      tile_sort = params.tile_sort;
     },
   };
 }

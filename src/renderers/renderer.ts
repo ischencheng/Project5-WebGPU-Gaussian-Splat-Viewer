@@ -8,7 +8,7 @@ import { CameraControl } from '../camera/camera-control';
 import { time, timeReturn } from '../utils/simple-console';
 
 export interface Renderer {
-  frame: (encoder: GPUCommandEncoder, texture_view: GPUTextureView) => void,
+  frame: (encoder: GPUCommandEncoder, texture_view: GPUTextureView, texture: GPUTexture) => void,
   camera_buffer: GPUBuffer,
 }
 
@@ -50,6 +50,7 @@ export default async function init(
     gaussian_multiplier: 1,
     culling: true,
     half_precision: false,
+    tile_sort: false,
     renderer: 'pointcloud',
     ply_file: '',
     cam_file: '',
@@ -139,6 +140,11 @@ export default async function init(
       gaussian_renderer?.update_settings(params);
     });
   }
+  {
+    pane.addInput(params, 'tile_sort').on('change', () => {
+      gaussian_renderer?.update_settings(params);
+    });
+  }
 
   document.addEventListener('keydown', (event) => {
     switch(event.key) {
@@ -164,8 +170,9 @@ export default async function init(
       params.fps=1.0/timeReturn()*1000.0;
       time();
       const encoder = device.createCommandEncoder();
-      const texture_view = context.getCurrentTexture().createView();
-      renderer.frame(encoder, texture_view);
+      const texture = context.getCurrentTexture();
+      const texture_view = texture.createView();
+      renderer.frame(encoder, texture_view, texture);
       device.queue.submit([encoder.finish()]);
     }
     requestAnimationFrame(frame);
