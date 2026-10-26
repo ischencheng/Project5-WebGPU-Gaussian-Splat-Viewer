@@ -20,6 +20,8 @@ This project is a 3D Gaussian Splatting viewer in WebGPU. A scene is a list of 0
 
 In the GUI I can switch between the point cloud and the gaussian renderer, change the gaussian size multiplier, and turn view frustum culling on and off. To use the live demo, load a `.ply` scene and its `cameras.json`, then drag to look around (right drag to pan, scroll to move forward and back) and press 0-9 to jump to the camera presets.
 
+For extra credit I made a half-precision (f16) version of the preprocess shader, which can be turned on with the `half_precision` checkbox.
+
 ### Point Cloud
 
 ![bicycle_points](images/bicycle_points.png)
@@ -98,6 +100,21 @@ To change only the number of gaussians, I made smaller copies of the bicycle sce
 * **Does number of guassians affect performance?  Why do you think this is?**
 
   Yes, the frame time grows about linearly: 13.6, 24.7, 37.2 and 49.2 ms for 25%, 50%, 75% and 100% of the bicycle (chart above). All three passes grow with it: the preprocess runs one thread per gaussian, the sort sorts one key per visible gaussian, and the render pass draws one quad per visible gaussian, and with the same view the covered pixels also grow with the number of quads. The number of gaussians is not the only thing that matters though: the bonsai and the 25% bicycle both have about 0.27 million gaussians, but they take 10.5 and 13.6 ms, because the render time also depends on how many pixels the splats cover.
+
+### Extra Credit: Half-Precision Preprocess
+
+WebGPU can do math in f16 if the GPU has the `shader-f16` feature. All the gaussian data is already stored as f16, so I made a second version of the preprocess shader that keeps it in f16: it reads the values with `bitcast<vec2<f16>>` instead of unpacking them to f32, and computes the spherical harmonics color and the 3D covariance in f16. In `preprocess.wgsl` these parts use a type alias `real`, which is `f32` in the normal shader, and the f16 shader is the same file with `enable f16;` at the top and `real` set to `f16`. The projection to 2D stays in f32, because the 2D covariance can be thousands of pixels squared and f16 only has about 3 significant digits. The `half_precision` checkbox in the GUI switches between the two shaders, and it is disabled when the GPU has no `shader-f16`.
+
+The image looks the same: in the whole bicycle view, the biggest difference between the f32 and the f16 image is 11 out of 255 in one color channel, and only 0.01% of the pixels differ by more than 4.
+
+This table shows the preprocess pass with f32 and f16 (ms).
+
+| Scene | f32 | f16 |
+|---|---|---|
+| Bicycle, whole scene | 2.57 | 2.58 |
+| Bonsai, whole tree | 0.574 | 0.577 |
+
+I expected a speedup, but f16 is about the same, and when I switch back and forth in the bicycle view the frame is even about 2% slower (53.5 vs 54.4 ms). I think there are three reasons. First, the preprocess pass is limited by memory (see the workgroup size question), and the data in memory was already f16 before, so the f16 shader doesn't read fewer bytes. Second, the RTX 2050 runs f16 math at the same speed as f32 outside of its tensor cores, so the math doesn't get faster either. Third, the preprocess pass is only about 5% of the frame. I am not sure where the small loss in the frame time comes from, since the preprocess pass itself is only 0.01 ms slower.
 
 ### Credits
 
