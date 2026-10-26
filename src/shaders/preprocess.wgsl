@@ -1,13 +1,16 @@
-const SH_C0: f32 = 0.28209479177387814;
+// f16 in the half precision version of this shader
+alias real = f32;
+
+const SH_C0: real = 0.28209479177387814;
 const SH_C1 = 0.4886025119029199;
-const SH_C2 = array<f32,5>(
+const SH_C2 = array<real,5>(
     1.0925484305920792,
     -1.0925484305920792,
     0.31539156525252005,
     -1.0925484305920792,
     0.5462742152960396
 );
-const SH_C3 = array<f32,7>(
+const SH_C3 = array<real,7>(
     -0.5900435899266435,
     2.890611442640554,
     -0.4570457994644658,
@@ -88,22 +91,27 @@ var<storage, read_write> sort_indices : array<u32>;
 @group(2) @binding(3)
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
+// two f16 values from one u32
+fn unpack_half(w: u32) -> vec2<real> {
+    return unpack2x16float(w);
+}
+
 /// reads the ith sh coef from the storage buffer 
-fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
+fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<real> {
     //TODO: access your binded sh_coeff, see load.ts for how it is stored
     // each gaussian has 16 x rgb f16 values = 24 u32
     let i = splat_idx * 24u + c_idx * 3u / 2u;
-    let a = unpack2x16float(sh_coefs[i]);
-    let b = unpack2x16float(sh_coefs[i + 1u]);
+    let a = unpack_half(sh_coefs[i]);
+    let b = unpack_half(sh_coefs[i + 1u]);
     // odd coefs start in the high half
     if (c_idx % 2u == 0u) {
-        return vec3<f32>(a.x, a.y, b.x);
+        return vec3<real>(a.x, a.y, b.x);
     }
-    return vec3<f32>(a.y, b.x, b.y);
+    return vec3<real>(a.y, b.x, b.y);
 }
 
 // spherical harmonics evaluation with Condon–Shortley phase
-fn computeColorFromSH(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
+fn computeColorFromSH(dir: vec3<real>, v_idx: u32, sh_deg: u32) -> vec3<real> {
     var result = SH_C0 * sh_coef(v_idx, 0u);
 
     if sh_deg > 0u {
@@ -132,7 +140,7 @@ fn computeColorFromSH(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     }
     result += 0.5;
 
-    return  max(vec3<f32>(0.), result);
+    return  max(vec3<real>(0.), result);
 }
 
 @compute @workgroup_size(workgroupSize,1,1)
@@ -159,25 +167,26 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     }
 
     // rotation matrix from the quaternion (w, x, y, z), given column by column
-    let rot_a = unpack2x16float(gaussian.rot[0]);
-    let rot_b = unpack2x16float(gaussian.rot[1]);
-    let q = normalize(vec4<f32>(rot_a, rot_b));
+    let rot_a = unpack_half(gaussian.rot[0]);
+    let rot_b = unpack_half(gaussian.rot[1]);
+    let q = normalize(vec4<real>(rot_a, rot_b));
     let w = q.x;
     let x = q.y;
     let y = q.z;
     let z = q.w;
-    let R = mat3x3<f32>(
+    let R = mat3x3<real>(
         1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + w * z), 2.0 * (x * z - w * y),
         2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + w * x),
         2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y)
     );
     // scale is stored in log space
-    let scale_a = unpack2x16float(gaussian.scale[0]);
-    let scale_b = unpack2x16float(gaussian.scale[1]);
-    let s = exp(vec3<f32>(scale_a, scale_b.x)) * render_settings.gaussian_scaling;
+    let scale_a = unpack_half(gaussian.scale[0]);
+    let scale_b = unpack_half(gaussian.scale[1]);
+    let s = exp(vec3<real>(scale_a, scale_b.x)) * real(render_settings.gaussian_scaling);
     // M = R * S, cov3d = M * M^T
-    let M = mat3x3<f32>(R[0] * s.x, R[1] * s.y, R[2] * s.z);
-    let cov3d = M * transpose(M);
+    let M = mat3x3<real>(R[0] * s.x, R[1] * s.y, R[2] * s.z);
+    // the projection needs f32, the 2d covariance can be thousands of pixels^2
+    let cov3d = mat3x3<f32>(M * transpose(M));
 
     // jacobian of the projection, clamped a bit outside the screen like the paper
     let t = view_pos.xyz;
@@ -210,7 +219,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let radius = ceil(3.0 * sqrt(max(lambda1, lambda2)));
 
     let cam_pos = camera.view_inv[3].xyz;
-    let color = computeColorFromSH(normalize(pos - cam_pos), idx, u32(render_settings.sh_deg));
+    let color = vec3<f32>(computeColorFromSH(vec3<real>(normalize(pos - cam_pos)), idx, u32(render_settings.sh_deg)));
 
     splats[idx].pos = ndc.xy;
     splats[idx].size = pack2x16float(radius * 2.0 / camera.viewport);

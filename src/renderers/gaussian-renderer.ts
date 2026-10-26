@@ -5,7 +5,7 @@ import { get_sorter,c_histogram_block_rows,C } from '../sort/sort';
 import { Renderer } from './renderer';
 
 export interface GaussianRenderer extends Renderer {
-  update_settings: (params: { gaussian_multiplier: number, culling: boolean }) => void,
+  update_settings: (params: { gaussian_multiplier: number, culling: boolean, half_precision: boolean }) => void,
 }
 
 // Utility to create GPU buffers
@@ -23,6 +23,11 @@ const createBuffer = (
 
 // byte size of Splat in the shaders
 const c_size_splat = 8 * 4;
+
+// the same preprocess shader with real = f16 and f16 values read with bitcast
+const preprocessF16WGSL = 'enable f16;\n' + preprocessWGSL
+  .replace('alias real = f32;', 'alias real = f16;')
+  .replace('return unpack2x16float(w);', 'return bitcast<vec2<f16>>(w);');
 
 // preprocess workgroup size, can be changed with ?workgroup=N in the url
 const workgroup_size = Number(new URLSearchParams(location.search).get('workgroup') ?? C.histogram_wg_size);
@@ -53,49 +58,56 @@ export default function get_renderer(
   // ===============================================
   //    Create Compute Pipeline and Bind Groups
   // ===============================================
-  const preprocess_pipeline = device.createComputePipeline({
-    label: 'preprocess',
-    layout: 'auto',
-    compute: {
-      module: device.createShaderModule({ code: preprocessWGSL }),
-      entryPoint: 'preprocess',
-      constants: {
-        workgroupSize: workgroup_size,
-        sortKeyPerThread: c_histogram_block_rows,
-        sortWorkgroupSize: C.histogram_wg_size,
+  const create_preprocess = (code: string) => {
+    const pipeline = device.createComputePipeline({
+      label: 'preprocess',
+      layout: 'auto',
+      compute: {
+        module: device.createShaderModule({ code }),
+        entryPoint: 'preprocess',
+        constants: {
+          workgroupSize: workgroup_size,
+          sortKeyPerThread: c_histogram_block_rows,
+          sortWorkgroupSize: C.histogram_wg_size,
+        },
       },
-    },
-  });
+    });
 
-  const camera_bind_group = device.createBindGroup({
-    label: 'preprocess camera',
-    layout: preprocess_pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: camera_buffer } },
-      { binding: 1, resource: { buffer: settings_buffer } },
-    ],
-  });
+    const camera_bind_group = device.createBindGroup({
+      label: 'preprocess camera',
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: camera_buffer } },
+        { binding: 1, resource: { buffer: settings_buffer } },
+      ],
+    });
 
-  const gaussian_bind_group = device.createBindGroup({
-    label: 'preprocess gaussians',
-    layout: preprocess_pipeline.getBindGroupLayout(1),
-    entries: [
-      { binding: 0, resource: { buffer: pc.gaussian_3d_buffer } },
-      { binding: 1, resource: { buffer: splat_buffer } },
-      { binding: 2, resource: { buffer: pc.sh_buffer } },
-    ],
-  });
+    const gaussian_bind_group = device.createBindGroup({
+      label: 'preprocess gaussians',
+      layout: pipeline.getBindGroupLayout(1),
+      entries: [
+        { binding: 0, resource: { buffer: pc.gaussian_3d_buffer } },
+        { binding: 1, resource: { buffer: splat_buffer } },
+        { binding: 2, resource: { buffer: pc.sh_buffer } },
+      ],
+    });
 
-  const sort_bind_group = device.createBindGroup({
-    label: 'sort',
-    layout: preprocess_pipeline.getBindGroupLayout(2),
-    entries: [
-      { binding: 0, resource: { buffer: sorter.sort_info_buffer } },
-      { binding: 1, resource: { buffer: sorter.ping_pong[0].sort_depths_buffer } },
-      { binding: 2, resource: { buffer: sorter.ping_pong[0].sort_indices_buffer } },
-      { binding: 3, resource: { buffer: sorter.sort_dispatch_indirect_buffer } },
-    ],
-  });
+    const sort_bind_group = device.createBindGroup({
+      label: 'sort',
+      layout: pipeline.getBindGroupLayout(2),
+      entries: [
+        { binding: 0, resource: { buffer: sorter.sort_info_buffer } },
+        { binding: 1, resource: { buffer: sorter.ping_pong[0].sort_depths_buffer } },
+        { binding: 2, resource: { buffer: sorter.ping_pong[0].sort_indices_buffer } },
+        { binding: 3, resource: { buffer: sorter.sort_dispatch_indirect_buffer } },
+      ],
+    });
+    return { pipeline, bind_groups: [camera_bind_group, gaussian_bind_group, sort_bind_group] };
+  };
+
+  const preprocess_f32 = create_preprocess(preprocessWGSL);
+  const preprocess_f16 = device.features.has('shader-f16') ? create_preprocess(preprocessF16WGSL) : undefined;
+  let half_precision = false;
 
 
   // ===============================================
@@ -140,11 +152,10 @@ export default function get_renderer(
   //    Command Encoder Functions
   // ===============================================
   const preprocess = (encoder: GPUCommandEncoder) => {
+    const active = (half_precision && preprocess_f16) || preprocess_f32;
     const pass = encoder.beginComputePass({ label: 'preprocess' });
-    pass.setPipeline(preprocess_pipeline);
-    pass.setBindGroup(0, camera_bind_group);
-    pass.setBindGroup(1, gaussian_bind_group);
-    pass.setBindGroup(2, sort_bind_group);
+    pass.setPipeline(active.pipeline);
+    active.bind_groups.forEach((group, i) => pass.setBindGroup(i, group));
     pass.dispatchWorkgroups(Math.ceil(pc.num_points / workgroup_size));
     pass.end();
   };
@@ -184,6 +195,7 @@ export default function get_renderer(
     camera_buffer,
     update_settings: (params) => {
       device.queue.writeBuffer(settings_buffer, 0, new Float32Array([params.gaussian_multiplier, pc.sh_deg, params.culling ? 1 : 0]));
+      half_precision = params.half_precision;
     },
   };
 }

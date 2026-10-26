@@ -49,6 +49,7 @@ export default async function init(
     fps: 0.0,
     gaussian_multiplier: 1,
     culling: true,
+    half_precision: false,
     renderer: 'pointcloud',
     ply_file: '',
     cam_file: '',
@@ -129,6 +130,12 @@ export default async function init(
   }
   {
     pane.addInput(params, 'culling').on('change', () => {
+      gaussian_renderer?.update_settings(params);
+    });
+  }
+  {
+    // only works if the gpu supports shader-f16
+    pane.addInput(params, 'half_precision', { disabled: !device.features.has('shader-f16') }).on('change', () => {
       gaussian_renderer?.update_settings(params);
     });
   }
