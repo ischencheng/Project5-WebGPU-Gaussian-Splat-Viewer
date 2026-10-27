@@ -20,7 +20,7 @@ This project is a 3D Gaussian Splatting viewer in WebGPU. A scene is a list of 0
 
 In the GUI I can switch between the point cloud and the gaussian renderer, change the gaussian size multiplier, and turn view frustum culling on and off. To use the live demo, load a `.ply` scene and its `cameras.json`, then drag to look around (right drag to pan, scroll to move forward and back) and press 0-9 to jump to the camera presets.
 
-For extra credit I made a half-precision (f16) version of the preprocess shader, which can be turned on with the `half_precision` checkbox.
+For extra credit I did both options: tile-based depth sorting with a compute shader that blends each 16x16 tile front to back (`tile_sort` checkbox), and a half-precision (f16) version of the preprocess shader (`half_precision` checkbox).
 
 ### Point Cloud
 
@@ -115,6 +115,37 @@ This table shows the preprocess pass with f32 and f16 (ms).
 | Bonsai, whole tree | 0.574 | 0.577 |
 
 I expected a speedup, but f16 is about the same, and when I switch back and forth in the bicycle view the frame is even about 2% slower (53.5 vs 54.4 ms). I think there are three reasons. First, the preprocess pass is limited by memory (see the workgroup size question), and the data in memory was already f16 before, so the f16 shader doesn't read fewer bytes. Second, the RTX 2050 runs f16 math at the same speed as f32 outside of its tensor cores, so the math doesn't get faster either. Third, the preprocess pass is only about 5% of the frame. I am not sure where the small loss in the frame time comes from, since the preprocess pass itself is only 0.01 ms slower.
+
+### Extra Credit: Tile-Based Depth Sorting
+
+The quad renderer sorts every gaussian once and draws it as a quad, so every pixel a quad covers runs the fragment shader and the blending, even when that pixel is already covered by opaque splats in front. The paper splits the screen into 16x16 pixel tiles instead, and I followed it (`tiles.wgsl` and `tile-renderer.ts`, turned on with the `tile_sort` checkbox):
+
+1. A compute pass writes one key for every tile a splat touches. The tile index is in the high bits of the 32-bit key and the view depth in the low bits (19 bits at 1920x1080), so one radix sort puts the keys in tile order and front to back inside each tile. The keys go to a second sorter that has room for 32 keys per gaussian (at most 33.5 million).
+2. Another pass looks at the sorted keys and writes where each tile's list starts and ends.
+3. A compute shader runs one 16x16 workgroup per tile. The workgroup loads the tile's splats into shared memory 256 at a time, and every thread blends its own pixel front to back: $C = C + T \alpha c$ and $T = T (1 - \alpha)$, where $T$ is how much light still gets through the splats in front. A pixel stops when its transmittance drops below 0.0001, and the whole tile stops when all its pixels are done.
+4. A fullscreen triangle copies the image to the canvas.
+
+A splat only gets keys for the tiles inside the box where its alpha can still be at least 1/255, which is where $d^T {\Sigma'}^{-1} d \le 2 \ln(255\,o)$, and I get the x and y size of that ellipse from the 2D covariance. Pixels outside this box are discarded anyway, so the image doesn't change, but the box is much smaller than the 3 sigma square the quads use: in the bicycle close-up it gives 5.0 million keys instead of more than 17 million. The image is the same as the quad renderer: in the views I checked less than 1.2% of the pixels differ by more than 4 out of 255, because the tile shader blends in f32 and the quads are blended in the 8-bit canvas.
+
+This table shows the frame time of the two renderers on the same 4 views as above (ms), and the number of tile keys.
+
+| View | Quads | Tiles | Tile keys |
+|---|---|---|---|
+| Bicycle, whole scene | 48.0 | 27.3 | 2.60M |
+| Bicycle, close-up | 197.8 | 47.9 | 4.95M |
+| Bonsai, whole tree | 9.4 | 9.1 | 0.83M |
+| Bonsai, close-up | 9.0 | 7.7 | 0.67M |
+
+This table shows where the time goes in the bicycle views (ms). For the tiles, render includes finding the ranges and the copy to the canvas.
+
+| Pass | Quads, whole | Tiles, whole | Quads, close-up | Tiles, close-up |
+|---|---|---|---|---|
+| Preprocess | 2.1 | 2.0 | 1.4 | 1.4 |
+| Tile keys | - | 1.3 | - | 2.0 |
+| Sort | 7.6 | 16.3 | 4.4 | 31.7 |
+| Render | 37.8 | 7.2 | 187.8 | 12.2 |
+
+Tile-based sorting is faster in every view, and much faster when big splats cover the screen: 4 times faster in the bicycle close-up. In the bicycle views the render pass is 5 to 15 times faster, for two reasons. Each pixel stops as soon as it is opaque, so the splats behind it cost nothing, while every quad is blended no matter what is in front of it. And each tile reads every splat once into shared memory for its 256 pixels, while the quads go through the rasterizer and the blending hardware for every pixel they cover. The cost moves to the sort: the whole bicycle view has 2.6 million keys for 1.06 million gaussians, so the sort takes twice as long, and in the close-up 7 times as long. In the bonsai views the quads are already fast, and the longer sort almost cancels the faster render. I think a sort with fewer passes would help here, because the tile index only needs 13 bits.
 
 ### Credits
 
